@@ -4,7 +4,15 @@ MultiCodex 在同一个项目里管理多个 ChatGPT 账号。每个账号有独
 
 ## 立即开始
 
-解压与你的平台对应的发行包，在项目目录运行解压出来的 `mcdx`。发行包含 Codex 和 Python 运行时。Linux x86_64 发行包在 Ubuntu 24.04 构建。
+Linux x86_64 用户可以用一条命令安装或更新 GitHub 上的最新正式版。
+
+```sh
+bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/athelstan189/mcdx/main/install.sh | bash' && export PATH="$HOME/.local/bin:$PATH"
+```
+
+安装后，在任意项目目录运行 `mcdx`。发行包自带 Codex 和 Python，默认使用本机模式。安装脚本会校验压缩包，把程序放在 `~/.local/opt/mcdx/`，并创建 `~/.local/bin/mcdx`。如果你已经下载了压缩包和 `.sha256` 文件，也可以在源码目录运行 `bash install.sh --from-dir 下载目录`。
+
+手动安装时，解压发行包，在项目目录运行解压出来的 `mcdx`。Linux x86_64 发行包在 Ubuntu 24.04 构建。
 
 ```sh
 cd /path/to/project
