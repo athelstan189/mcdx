@@ -550,7 +550,7 @@ def draw_dashboard(screen, manager, accounts, index, message, styles, *, focus=N
         draw_panel(screen, top, side, menu_width, height, "ACTIONS", border)
         start = max(0, min(action_index - capacity // 2, len(DASHBOARD_ACTIONS) - capacity))
         for pos, (_, label) in enumerate(DASHBOARD_ACTIONS[start:start + capacity], start):
-            row = top + 2 + pos - start
+            row = top + 1 + pos - start
             active = focus == "actions" and pos == action_index
             style = styles["selected"] if active else curses.A_NORMAL
             if active:
