@@ -12,12 +12,15 @@ import unicodedata
 from contextlib import ExitStack
 from pathlib import Path
 
-from native_runtime import NativeRuntime, import_sessions, locked, process_env
+from account_status import AccountStatus, StatusChecks, remaining_percentages
+from login_dialog import DOWN, ENTER, TAB, UP, sign_in
+from native_runtime import NativeRuntime, app_server, import_sessions, locked, process_env
 
 ROOT = Path(sys.executable if getattr(sys, "frozen", False) else __file__).resolve().parent
 NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
 ACCOUNT_ACTIONS = ("open", "resume", "login", "status", "logout")
 PROJECT_ACTIONS = ("open", "resume")
+DASHBOARD_ACTIONS = (("add", "Add account"), ("check-status", "Check status"), ("quit", "Quit"))
 SESSION_DIRECTORIES = ("sessions", "archived_sessions")
 SHARED_DIRECTORIES = (*SESSION_DIRECTORIES, "thread-writer-locks")
 
@@ -47,6 +50,7 @@ class MultiCodex:
         for directory in directories:
             (self.shared / directory).mkdir(parents=True, exist_ok=True)
         self.migrate(backend)
+        self.status_checks = StatusChecks(self.account_status)
 
     def migrate(self, backend):
         marker = backend / ".migrated-xdg"
@@ -125,15 +129,48 @@ class MultiCodex:
         project_id = hashlib.sha256(os.fsencode(self.workspace)).hexdigest()[:24]
         return f"/workspaces/{project_id}"
 
+    def account_home(self, name):
+        if name not in self.accounts():
+            raise ValueError(f"Unknown account: {name}")
+        home = self.accounts_dir / name
+        self.prepare_account(home)
+        return home
+
+    def compose_invocation(self, home, mount=None):
+        return [
+            "docker", "compose", "--env-file", "/dev/null",
+            "-f", str(ROOT / "compose.yaml"),
+        ], {
+            **process_env(),
+            "MC_HOME": str(home),
+            "MC_SHARED": str(self.shared),
+            "MC_WORKSPACE": str(self.workspace),
+            "MC_PROJECT_DIR": mount or "/workspace",
+            "MC_UID": str(os.getuid()),
+            "MC_GID": str(os.getgid()),
+        }
+
+    def app_server_invocation(self, name, container=None):
+        home = self.account_home(name)
+        args = ["app-server", "--listen", "stdio://"]
+        if not self.docker:
+            runtime = NativeRuntime(ROOT, self.shared, home, self.workspace)
+            return runtime.command + args, {"env": runtime.env, "cwd": home}
+        command, env = self.compose_invocation(home)
+        command += ["run", "--rm", "--no-deps", "-T"]
+        if container:
+            command += ["--name", container]
+        return command + [
+            "--entrypoint", "codex", "codex",
+            "-c", 'cli_auth_credentials_store="file"',
+            "-c", 'log_dir="/home/codex/.codex/log"',
+            *args,
+        ], {"env": env}
+
     def run(self, action, name=None, thread=None):
         if self.docker and action == "browser-login":
             raise ValueError("Browser sign-in is available in native mode. Use device sign-in for Docker.")
-        home = self.accounts_dir
-        if action != "build":
-            if name not in self.accounts():
-                raise ValueError(f"Unknown account: {name}")
-            home /= name
-            self.prepare_account(home)
+        home = self.accounts_dir if action == "build" else self.account_home(name)
 
         if not self.docker:
             runtime = NativeRuntime(ROOT, self.shared, home, self.workspace)
@@ -145,11 +182,12 @@ class MultiCodex:
                     return 0
             return runtime.run(action, thread)
 
-        command = [
-            "docker", "compose", "--env-file", "/dev/null",
-            "-f", str(ROOT / "compose.yaml"),
-        ]
+        command, options = self.docker_invocation(action, home, thread)
+        return subprocess.run(command, **options, check=False).returncode
+
+    def docker_invocation(self, action, home, thread=None):
         mount = self.project_mount() if action in PROJECT_ACTIONS else None
+        command, env = self.compose_invocation(home, mount)
         if action == "build":
             command += ["build", "codex"]
         else:
@@ -159,49 +197,91 @@ class MultiCodex:
             command += ["project" if mount else "codex", action]
             if thread:
                 command.append(thread)
-        return subprocess.run(command, env={
-            **process_env(),
-            "MC_HOME": str(home),
-            "MC_SHARED": str(self.shared),
-            "MC_WORKSPACE": str(self.workspace),
-            "MC_PROJECT_DIR": mount or "/workspace",
-            "MC_UID": str(os.getuid()),
-            "MC_GID": str(os.getgid()),
-        }, check=False).returncode
+        return command, {"env": env}
+
+    def account_status(self, name):
+        home = self.account_home(name)
+        if self.docker:
+            command, options = self.docker_invocation("status", home)
+        else:
+            runtime = NativeRuntime(ROOT, self.shared, home, self.workspace)
+            command, options = runtime.invocation("status")
+        completed = subprocess.run(command, **options, stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                   errors="replace", timeout=10, check=False)
+        if completed.returncode:
+            if "Not logged in" in completed.stdout.splitlines():
+                return AccountStatus("Signed out", "muted")
+            return AccountStatus("Check failed", "error")
+        try:
+            command, options = self.app_server_invocation(name)
+            with app_server(command, timeout=10, **options) as request:
+                response = request("account/rateLimits/read", {"excludeResetCreditDetails": True})
+            five_hours, week = remaining_percentages(response)
+        except (OSError, ValueError):
+            return AccountStatus("Signed in · quota unavailable", "error")
+        return AccountStatus("Signed in", "good", five_hours, week)
 
 
 def choose(screen, manager, selected, message):
     accounts = manager.accounts()
     index = accounts.index(selected) if selected in accounts else 0
+    focus = "accounts" if accounts else "actions"
+    action_index = 0
     styles = dashboard_styles()
     try:
         curses.curs_set(0)
     except curses.error:
         pass
     dialog = None
+    dialog_index = 0
     alias = error = ""
-    shortcuts = {"r": "resume", "l": "login", "s": "status", "x": "logout"}
+    shortcuts = {"a": "add", "q": "quit", "s": "check-status"}
+    if manager.docker:
+        shortcuts["b"] = "build"
+    account_shortcuts = {"r": "resume", "l": "login", "x": "logout"}
     if not manager.docker:
-        shortcuts["L"] = "browser-login"
-    enter = ("\n", "\r", curses.KEY_ENTER)
+        account_shortcuts["L"] = "browser-login"
+    checks = manager.status_checks
+    refreshing = []
+    for account in accounts:
+        if manager.has_credentials(account):
+            checks.refresh(account)
+        else:
+            checks.forget(account)
     while True:
+        checks.poll()
+        if refreshing and all(account not in checks.pending for account in refreshing):
+            failed = sum(checks.results[account].style == "error" for account in refreshing)
+            message = (f"Status refresh failed for {failed}/{len(refreshing)} accounts.", True) if failed else (
+                "Account status refreshed.", False
+            )
+            refreshing = []
         name = accounts[index] if accounts else None
-        draw_dashboard(screen, manager, accounts, index, message, styles)
+        status_message = ("Refreshing account status…", False) if refreshing else message
+        draw_dashboard(screen, manager, accounts, index, status_message, styles,
+                       focus=focus, action_index=action_index)
         if dialog:
-            draw_dialog(screen, dialog, alias if dialog == "add" else name, error, styles)
+            draw_dialog(screen, dialog, alias if dialog == "add" else name, error, styles, dialog_index)
         screen.refresh()
+        screen.timeout(150 if checks.pending else -1)
         try:
             key = screen.get_wch()
+        except curses.error:
+            continue
         except KeyboardInterrupt:
             if not dialog:
                 raise
             dialog = None
             continue
+        screen.timeout(-1)
 
         if dialog == "add":
-            if key == "\x1b" or (key in enter and not alias):
+            if key == "\x1b" or (key in ENTER and dialog_index == 1):
                 dialog = None
-            elif key in enter:
+            elif key in (*TAB, curses.KEY_UP, curses.KEY_DOWN):
+                dialog_index = 1 - dialog_index
+            elif key in ENTER:
                 try:
                     manager.add(alias)
                 except (OSError, ValueError) as exc:
@@ -209,38 +289,69 @@ def choose(screen, manager, selected, message):
                 else:
                     accounts = manager.accounts()
                     index = accounts.index(alias)
-                    return "login", alias
-            elif key in (curses.KEY_BACKSPACE, "\b", "\x7f"):
+                    focus, action_index = "accounts", 0
+                    dialog = None
+                    message = sign_in(screen, manager, accounts, index, styles, draw_dashboard, draw_text)
+            elif dialog_index == 0 and key in (curses.KEY_BACKSPACE, "\b", "\x7f"):
                 alias, error = alias[:-1], ""
-            elif isinstance(key, str) and key in "abcdefghijklmnopqrstuvwxyz0123456789_-" and len(alias) < 32:
+            elif (dialog_index == 0 and isinstance(key, str)
+                  and key in "abcdefghijklmnopqrstuvwxyz0123456789_-" and len(alias) < 32):
                 alias, error = alias + key, ""
             continue
 
         if dialog == "logout":
-            if key in ("y", "Y"):
+            if key in ("y", "Y") or (key in ENTER and dialog_index == 1):
                 return "logout", name
-            if key in ("n", "N", "\x1b", *enter):
+            if key in (*TAB, *UP, *DOWN, curses.KEY_LEFT, curses.KEY_RIGHT):
+                dialog_index = 1 - dialog_index
+            if key in ("n", "N", "\x1b", *ENTER):
                 dialog = None
             continue
 
-        if key in ("q", "\x1b"):
-            return "quit", name
-        if key == "a":
-            dialog, alias, error = "add", "", ""
-        if key == "b" and manager.docker:
-            return "build", name
-        if not accounts:
-            if key in enter:
-                dialog, alias, error = "add", "", ""
+        if accounts and key in (*TAB, curses.KEY_LEFT, curses.KEY_RIGHT):
+            if key in TAB:
+                focus = "actions" if focus == "accounts" else "accounts"
+            else:
+                focus = "accounts" if key == curses.KEY_LEFT else "actions"
             continue
-        if key in enter:
-            return "open", name
-        if key == "x":
-            dialog = "logout"
-        elif key in shortcuts:
-            return shortcuts[key], name
-        elif key in (curses.KEY_UP, curses.KEY_DOWN, "k", "j"):
-            index = (index + (1 if key in (curses.KEY_DOWN, "j") else -1)) % len(accounts)
+        if key in (*UP, *DOWN):
+            step = 1 if key in DOWN else -1
+            if focus == "accounts":
+                index = (index + step) % len(accounts)
+            else:
+                action_index = (action_index + step) % len(DASHBOARD_ACTIONS)
+            continue
+        if key == "\x1b":
+            if focus == "actions" and accounts:
+                focus = "accounts"
+                continue
+            return "quit", name
+
+        action = shortcuts.get(key) or (account_shortcuts.get(key) if accounts else None)
+        if key in ENTER:
+            if focus == "actions":
+                action = DASHBOARD_ACTIONS[action_index][0]
+            else:
+                action = "open" if manager.has_credentials(name) else "login"
+        if action == "add":
+            dialog, alias, error, dialog_index = "add", "", "", 0
+        elif action == "logout":
+            dialog, dialog_index = "logout", 0
+        elif action in ("login", "browser-login"):
+            message = sign_in(screen, manager, accounts, index, styles, draw_dashboard, draw_text,
+                              browser=(action == "browser-login"))
+        elif action == "check-status":
+            if not refreshing:
+                refreshing = [account for account in accounts if manager.has_credentials(account)]
+                for account in refreshing:
+                    if account not in checks.pending:
+                        checks.refresh(account, force=True)
+                if not refreshing:
+                    message = ("No accounts with saved credentials.", False)
+                elif not wide_dashboard(*screen.getmaxyx()):
+                    focus = "accounts"
+        elif action:
+            return action, name
 
 
 def dashboard_styles():
@@ -291,78 +402,120 @@ def draw_text(screen, row, col, value, style=0, width=None, *, keep_end=False):
     screen.addstr(row, col, value, style)
 
 
-def draw_dashboard(screen, manager, accounts, index, message, styles):
+def draw_panel(screen, top, left, width, height, title, style):
+    edge = "─" * (width - 2)
+    draw_text(screen, top, left, "╭" + edge + "╮", style)
+    draw_text(screen, top, left + 2, f" {title} ", style, width - 4)
+    for row in range(top + 1, top + height - 1):
+        draw_text(screen, row, left, "│", style)
+        draw_text(screen, row, left + width - 1, "│", style)
+    draw_text(screen, top + height - 1, left, "╰" + edge + "╯", style)
+
+
+def quota_label(percent, pending=False):
+    if percent is not None:
+        return f"{percent}%"
+    return "…" if pending else "—"
+
+
+def wide_dashboard(rows, cols):
+    return cols >= 76 and rows >= 17
+
+
+def draw_dashboard(screen, manager, accounts, index, message, styles, *, focus=None, action_index=0):
     screen.erase()
     rows, cols = screen.getmaxyx()
-    width = min(104, cols - 4)
-    left = (cols - width) // 2
     if rows < 13 or cols < 32:
         draw_text(screen, 0, 0, "MultiCodex", styles["accent"])
-        draw_text(screen, 1, 0, "Enlarge terminal · q Quit", styles["muted"])
+        draw_text(screen, 1, 0, "Enlarge terminal", styles["muted"])
         return
 
-    draw_text(screen, 1, left, "MultiCodex", styles["accent"])
-    if manager.docker:
-        draw_text(screen, 1, left + 12, "Docker", styles["muted"])
-    draw_text(screen, 2, left, "Project", styles["muted"])
-    draw_text(screen, 2, left + 9, str(manager.workspace), width=width - 9, keep_end=True)
-    draw_text(screen, 4, left, "─" * width, styles["muted"])
-
-    wide = width >= 70 and rows >= 17
-    panel = width - 30 if wide else width
-    draw_text(screen, 5, left, "ACCOUNTS", curses.A_BOLD)
-    capacity = max(1, rows - (10 if wide else 12))
+    card_width = min(128, cols - 2)
+    card_left = (cols - card_width) // 2
+    width = card_width - 4
+    left = card_left + 2
+    wide = wide_dashboard(rows, cols)
+    account_width = width - 32 if wide else width
+    menu_width = 30 if wide else width
+    side = left + account_width + 2 if wide else left
     count = len(accounts)
-    position = f"{index + 1} / {count}" if count > capacity else str(count)
-    draw_text(screen, 5, left + 10, position, styles["muted"])
-    start = max(0, min(index - capacity // 2, count - capacity))
-    for offset, name in enumerate(accounts[start:start + capacity]):
-        row = 7 + offset
-        current = index == start + offset
-        saved = manager.has_credentials(name)
-        state = "● Key saved" if saved else "○ Signed out"
-        style = styles["selected"] if current else curses.A_NORMAL
-        if current:
-            draw_text(screen, row, left, " " * panel, style)
-        draw_text(screen, row, left + 1, "›" if current else " ", style)
-        draw_text(screen, row, left + 3, name, style, panel - 18)
-        draw_text(screen, row, left + panel - 14, state,
-                  style if current else styles["good" if saved else "muted"])
-    if not accounts:
-        draw_text(screen, 7, left + 1, "No accounts yet", curses.A_BOLD)
-        if capacity > 1 and not wide:
-            draw_text(screen, 8, left + 1, "Press Enter to sign in.", styles["muted"])
+    show_accounts = wide or (bool(accounts) and focus != "actions")
+    show_actions = wide or not show_accounts
+    panel_items = max(count if show_accounts else 0, len(DASHBOARD_ACTIONS) if show_actions else 0)
+    height = min(rows - 9, max(6, panel_items + 3))
+    capacity = height - 3
+    card_height = height + 6
+    free_rows = rows - card_height
+    card_top = min(round(free_rows * (1 - 0.618)), free_rows - 3)
+    top = card_top + 4
+    title = "MultiCodex  ·  Docker" if manager.docker else "MultiCodex"
+    draw_panel(screen, card_top, card_left, card_width, card_height, title, styles["muted"])
+    draw_text(screen, card_top, card_left + 3, title, styles["accent"])
+    draw_text(screen, card_top + 2, left, "Project", styles["muted"])
+    draw_text(screen, card_top + 2, left + 9, str(manager.workspace), width=width - 9, keep_end=True)
 
-    if wide:
-        side = left + panel + 4
-        draw_text(screen, 5, side, "ACTIONS", curses.A_BOLD)
-        actions = (("a" if accounts else "Enter", "Add & sign in"),)
-        if manager.docker:
-            actions += (("b", "Build image"),)
-        if accounts:
-            login_hint = ("l", "Sign in") if manager.docker else ("l / L", "Device / browser")
-            actions = (("Enter", "Open Codex"), ("r", "Resume here"), login_hint,
-                       ("s", "Check login"), ("x", "Sign out"), *actions)
-        for row, (key, label) in enumerate(actions, 7):
-            draw_text(screen, row, side, key, styles["accent"])
-            draw_text(screen, row, side + 8, label)
-        footer = "↑ ↓  Select account     q  Quit" if accounts else "q  Quit"
-        draw_text(screen, rows - 2, left, footer, styles["muted"])
-    else:
-        login_keys = "l Login" if manager.docker else "l/L Login"
-        hints = (f"↵ Open  r Resume  {login_keys}", "s Status  x Logout  a Add",
-                 "↑↓ Select   b Build   q Quit" if manager.docker else "↑↓ Select   q Quit")
+    if show_accounts:
+        border = styles["accent"] if focus == "accounts" else styles["muted"]
+        count_label = f"{index + 1}/{count}" if count > capacity else str(count)
+        draw_panel(screen, top, left, account_width, height, f"ACCOUNTS  {count_label}", border)
+        week_width = 11 if account_width >= 40 else 8
+        week_col = left + account_width - week_width
+        five_col = week_col - 9
+        draw_text(screen, top + 1, five_col, "5h left", styles["muted"])
+        draw_text(screen, top + 1, week_col, "Week left" if week_width == 11 else "Week", styles["muted"])
         if not accounts:
-            hints = ("↵ Add & sign in", "b Build   q Quit" if manager.docker else "q Quit")
-        for row, hint in enumerate(hints, rows - 4):
-            draw_text(screen, row, left, hint, styles["muted"], width)
+            draw_text(screen, top + 2, left + 3, "No accounts yet", styles["muted"])
+        start = max(0, min(index - capacity // 2, count - capacity))
+        for pos, name in enumerate(accounts[start:start + capacity], start):
+            row = top + 2 + pos - start
+            current = index == pos
+            active = current and focus == "accounts"
+            saved = manager.has_credentials(name)
+            style = styles["selected"] if active else curses.A_BOLD if current else curses.A_NORMAL
+            if active:
+                draw_text(screen, row, left + 1, " " * (account_width - 2), style)
+            draw_text(screen, row, left + 2, "›" if current else " ", style)
+            draw_text(screen, row, left + 4, name, style, five_col - left - 5)
+            status = manager.status_checks.results.get(name)
+            quota_style = style if active else styles[status.style if status and saved else "muted"]
+            if not saved or (status and status.label == "Signed out"):
+                draw_text(screen, row, five_col, "Signed out", quota_style, 15)
+            else:
+                pending = name in manager.status_checks.pending
+                draw_text(screen, row, five_col, quota_label(status.five_hours if status else None, pending),
+                          quota_style, 7)
+                draw_text(screen, row, week_col, quota_label(status.week if status else None, pending),
+                          quota_style, 6)
+
+    if show_actions:
+        border = styles["accent"] if focus == "actions" else styles["muted"]
+        draw_panel(screen, top, side, menu_width, height, "ACTIONS", border)
+        start = max(0, min(action_index - capacity // 2, len(DASHBOARD_ACTIONS) - capacity))
+        for pos, (_, label) in enumerate(DASHBOARD_ACTIONS[start:start + capacity], start):
+            row = top + 2 + pos - start
+            active = focus == "actions" and pos == action_index
+            style = styles["selected"] if active else curses.A_NORMAL
+            if active:
+                draw_text(screen, row, side + 1, " " * (menu_width - 2), style)
+            draw_text(screen, row, side + 2, ("› " if active else "  ") + label, style, menu_width - 4)
+
+    footer_row = card_top + card_height + 1
+    enter_label = "Open" if focus == "accounts" and manager.has_credentials(accounts[index]) else (
+        "Sign in" if focus == "accounts" else "Confirm"
+    )
+    footer = f"↑↓ Select   Enter {enter_label}" if wide else "↑↓ Select  Enter"
+    if accounts:
+        footer = ("Tab Switch panel   " if wide else "Tab Switch  ") + footer
+    draw_text(screen, footer_row, left, footer, styles["muted"], width)
     if message:
         label, failed = message
-        draw_text(screen, rows - (3 if wide else 5), left, label,
+        draw_text(screen, footer_row + 1, left, label,
                   styles["error" if failed else "accent"], width)
+    elif not wide and not accounts:
+        draw_text(screen, footer_row + 1, left, "No accounts yet", styles["muted"], width)
 
 
-def draw_dialog(screen, mode, value, error, styles):
+def draw_dialog(screen, mode, value, error, styles, selection):
     rows, cols = screen.getmaxyx()
     if rows < 8 or cols < 16:
         return
@@ -376,13 +529,19 @@ def draw_dialog(screen, mode, value, error, styles):
     if mode == "add":
         draw_text(screen, top + 1, inset, "Add account", curses.A_BOLD)
         draw_text(screen, top + 2, inset, "Use lowercase letters, numbers, _ or -.", styles["muted"], width - 6)
-        draw_text(screen, top + 4, inset, "  " + value + "▏", styles["selected"], width - 6)
+        field = "  " + value + ("▏" if selection == 0 else "")
+        draw_text(screen, top + 4, inset, field, styles["selected"] if selection == 0 else 0, width - 6)
         draw_text(screen, top + 5, inset, error, styles["error"], width - 6)
-        draw_text(screen, top + 6, inset, "Enter Sign in     Esc Cancel", styles["accent"], width - 6)
+        draw_text(screen, top + 6, inset, "Enter Next   Tab", styles["muted"], width - 6)
+        draw_text(screen, top + 6, inset + 18, " Cancel ", styles["selected"] if selection == 1 else 0,
+                  width - 24)
     else:
         draw_text(screen, top + 1, inset, "Sign out", curses.A_BOLD)
         draw_text(screen, top + 3, inset, f"Sign out of {value}?", width=width - 6)
-        draw_text(screen, top + 6, inset, "Y Sign out     Esc Cancel", styles["accent"], width - 6)
+        draw_text(screen, top + 5, inset, " Cancel ", styles["selected"] if selection == 0 else 0, width - 6)
+        draw_text(screen, top + 5, inset + 10, " Sign out ", styles["selected"] if selection == 1 else 0,
+                  width - 16)
+        draw_text(screen, top + 6, inset, "Tab Select   Enter Confirm", styles["muted"], width - 6)
 
 
 def choose_session(screen, sessions):
@@ -433,11 +592,8 @@ def tui(manager):
             return 0
         try:
             code = manager.run(action, name)
-            label = "Browser sign-in" if action == "browser-login" else action.title()
-            message = (f"{label} failed (exit {code})" if code else f"{label} complete", bool(code))
-            if code and action == "login" and not manager.docker:
-                message = ("Device sign-in failed. Press l to retry or L for browser sign-in.", True)
-            if code or action in ("status", "build", "login", "browser-login", "logout"):
+            message = (f"{action.title()} failed (exit {code})" if code else f"{action.title()} complete", bool(code))
+            if code or action in ("status", "build", "logout"):
                 input("Press Enter to return to MultiCodex. ")
         except (OSError, ValueError) as err:
             message = (str(err), True)

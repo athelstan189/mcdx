@@ -11,15 +11,17 @@ cd /path/to/project
 /path/to/multicodex-linux-x86_64/mcdx
 ```
 
-首次打开按 Enter，输入本地别名并回车，就会进入 ChatGPT 设备码登录。账号需启用设备码登录。选中账号后，Enter 启动 Codex，`r` 打开当前项目的跨账号会话列表。还可以按 `a` 添加并登录账号、`l` 重新登录、`s` 检查登录状态、`x` 登出。账号列表的凭据标记表示本地已有凭据文件。
+首次打开按 Enter，输入本地别名并回车，就会弹出登录方式选择。用方向键选设备码或浏览器登录，再按 Enter。设备码登录需要在 ChatGPT 开启设备码授权。弹窗会显示授权链接、进度和结果。使用 Tab 选中「打开浏览器」「复制链接」或「取消」，再按 Enter 执行。复制链接需要终端支持剪贴板。
 
-本机模式也可以用大写 `L` 或 `mcdx login 账号别名 --browser` 打开浏览器登录。通过 SSH 使用远程服务器时，先从浏览器所在电脑建立回调端口转发，例如 `ssh -L 1455:localhost:1455 user@server`，再在该 SSH 会话中启动浏览器登录。以 Codex 显示的回调端口为准。
+管理卡片包含 Accounts 和 Actions 两个面板，快捷键与状态提示在卡片下方。Accounts 显示 Codex 的 5 小时和 7 天用量窗口的剩余百分比。用 ↑ / ↓ 选择账号，Enter 直接打开 Codex，尚未登录的账号会先打开登录窗口。按 Tab 切到 Actions，选中 Check status 后按一次 Enter，Accounts 中的额度会在后台刷新。缺失的额度显示为 `—`。窄终端一次显示一个面板。
+
+本机模式也可以用大写 `L` 直接进入浏览器登录弹窗，或用 `mcdx login 账号别名 --browser` 启动命令行登录。通过 SSH 使用远程服务器时，先从浏览器所在电脑建立回调端口转发，例如 `ssh -L 1455:localhost:1455 user@server`，再在该 SSH 会话中启动浏览器登录。Docker 模式的弹窗提供设备码登录。
 
 如需从任意项目直接运行 `mcdx`，在解压目录运行一次 `./mcdx install`，它会在 `~/.local/bin` 创建入口。该目录需在 `PATH` 中。请保留解压目录里的运行时和配套文件。默认工作目录是启动命令时的目录，也可用 `mcdx --workspace /path/to/project` 指定。
 
 本机版直接读写原版 Codex 的 `~/.codex/sessions/`、`~/.codex/archived_sessions/` 和本地会话数据库。每个账号的凭据、配置、缓存和日志位于 `~/.codex/multicodex/accounts/<别名>/`。旧版 MultiCodex 数据在首次启动时迁入。迁移需要退出仍在运行的旧版窗口。
 
-本机版沿用 Codex 自带的沙箱。管理器的 `r` 通过本地 App Server 枚举共享会话，再按 ID 在所选账号下打开。内置的 `/resume` 可通过面向 Codex 0.172.0 的 `resume.patch` 放开账号筛选。
+本机版沿用 Codex 自带的沙箱。管理器的恢复菜单通过本地 App Server 枚举共享会话，再按 ID 在所选账号下打开。内置的 `/resume` 可通过面向 Codex 0.172.0 的 `resume.patch` 放开账号筛选。
 
 ## Docker 版
 

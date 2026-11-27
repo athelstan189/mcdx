@@ -108,7 +108,7 @@ class NativeRuntime:
             self.command += ["-c", f"{key}={json.dumps(value, ensure_ascii=False)}"]
         self.command += ["-c", "check_for_update_on_startup=false"]
 
-    def run(self, action, thread=None):
+    def invocation(self, action, thread=None):
         args = {
             "login": ["login", "--device-auth"],
             "browser-login": ["login"],
@@ -118,72 +118,18 @@ class NativeRuntime:
             "resume": ["resume", "--", thread] if thread else ["resume"],
         }[action]
         cwd = self.workspace if action in ("open", "resume") else self.home
-        return subprocess.call(self.command + args, cwd=cwd, env=self.env)
+        return self.command + args, {"cwd": cwd, "env": self.env}
+
+    def run(self, action, thread=None):
+        command, options = self.invocation(action, thread)
+        return subprocess.call(command, **options)
 
     def sessions(self):
-        with tempfile.TemporaryFile() as errors:
-            process = subprocess.Popen(
-                self.command + ["app-server", "--listen", "stdio://"],
-                cwd=self.workspace, env=self.env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=errors,
-            )
-            try:
-                return self.read_sessions(process)
-            except (BrokenPipeError, EOFError, TimeoutError) as exc:
-                errors.seek(0, os.SEEK_END)
-                errors.seek(max(0, errors.tell() - 1536))
-                details = errors.read().decode("utf-8", "replace").strip()
-                raise ValueError(details or str(exc)) from exc
-            finally:
-                try:
-                    process.stdin.close()
-                except BrokenPipeError:
-                    pass
-                try:
-                    process.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    process.terminate()
-                    try:
-                        process.wait(timeout=2)
-                    except subprocess.TimeoutExpired:
-                        process.kill()
-                        process.wait()
-                process.stdout.close()
+        command = self.command + ["app-server", "--listen", "stdio://"]
+        with app_server(command, cwd=self.workspace, env=self.env) as request:
+            return self.read_sessions(request)
 
-    def read_sessions(self, process):
-        request_id = 0
-        pending = b""
-
-        def send(message):
-            process.stdin.write(json.dumps(message).encode("utf-8") + b"\n")
-            process.stdin.flush()
-
-        def request(method, params):
-            nonlocal request_id, pending
-            request_id += 1
-            send({"id": request_id, "method": method, "params": params})
-            deadline = time.monotonic() + 15
-            fd = process.stdout.fileno()
-            while True:
-                line, sep, rest = pending.partition(b"\n")
-                if sep:
-                    pending = rest
-                    message = json.loads(line)
-                    if message.get("id") == request_id:
-                        if "error" in message:
-                            raise ValueError(message["error"]["message"])
-                        return message["result"]
-                    continue
-                wait = max(0, deadline - time.monotonic())
-                if not select.select([fd], [], [], wait)[0]:
-                    raise TimeoutError("Timed out waiting for Codex session history.")
-                chunk = os.read(fd, 65536)
-                if not chunk:
-                    raise EOFError("Codex closed its session history service.")
-                pending += chunk
-
-        request("initialize", {"clientInfo": {"name": "multicodex", "version": "0.1.0"}})
-        send({"method": "initialized"})
+    def read_sessions(self, request):
         params = {"cwd": str(self.workspace), "limit": 100, "sortKey": "updated_at",
                   "currentAccountOnly": False}
         sessions = []
@@ -196,3 +142,68 @@ class NativeRuntime:
             if cursor == params.get("cursor"):
                 raise ValueError("Codex returned a repeated session history cursor.")
             params["cursor"] = cursor
+
+
+@contextmanager
+def app_server(command, *, timeout=15, **options):
+    with tempfile.TemporaryFile() as errors, subprocess.Popen(
+        command, **options, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors,
+    ) as process:
+        try:
+            yield app_server_requester(process, timeout)
+        except (BrokenPipeError, EOFError, TimeoutError) as exc:
+            errors.seek(0, os.SEEK_END)
+            errors.seek(max(0, errors.tell() - 1536))
+            details = errors.read().decode("utf-8", "replace").strip()
+            raise ValueError(details or str(exc)) from exc
+        finally:
+            try:
+                process.stdin.close()
+            except BrokenPipeError:
+                pass
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+
+
+def app_server_requester(process, timeout):
+    request_id = 0
+    pending = b""
+    fd = process.stdout.fileno()
+
+    def send(message):
+        process.stdin.write(json.dumps(message).encode("utf-8") + b"\n")
+        process.stdin.flush()
+
+    def request(method, params):
+        nonlocal request_id, pending
+        request_id += 1
+        send({"id": request_id, "method": method, "params": params})
+        deadline = time.monotonic() + timeout
+        while True:
+            line, sep, rest = pending.partition(b"\n")
+            if sep:
+                pending = rest
+                message = json.loads(line)
+                if message.get("id") == request_id:
+                    if "error" in message:
+                        raise ValueError(message["error"]["message"])
+                    return message["result"]
+                continue
+            wait = max(0, deadline - time.monotonic())
+            if not select.select([fd], [], [], wait)[0]:
+                raise TimeoutError(f"Timed out waiting for {method}.")
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                raise EOFError("Codex closed its App Server.")
+            pending += chunk
+
+    request("initialize", {"clientInfo": {"name": "multicodex", "version": "0.1.0"}})
+    send({"method": "initialized"})
+    return request
