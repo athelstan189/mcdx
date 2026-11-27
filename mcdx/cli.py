@@ -23,6 +23,16 @@ ACCOUNT_ACTIONS = ("open", "resume", "login", "status", "logout")
 PROJECT_ACTIONS = ("open", "resume")
 DASHBOARD_ACTIONS = (("check-status", "Check status"), ("add", "Add account"),
                      ("change-name", "Change name"), ("delete", "Delete account"), ("quit", "Quit mcdx"))
+GOLDEN_TOP_FRACTION = 1 - 0.618
+WORDMARK = (
+    ("█▄ ▄█         █    █    ▀", "▄█▀▀▄             █"),
+    ("█ ▀ █  █   █  █   ▀█▀▀  █", "█      ▄▀▀▀▄  ▄▀▀▀█  ▄▀▀▀▄  ▀▄ ▄▀"),
+    ("█   █  █  ▄█  █    █    █", "█▄  ▄  █   █  █   █  █▀▀▀▀   ▄▀▄"),
+    ("▀   ▀   ▀▀ ▀  ▀▀    ▀▀  ▀", " ▀▀▀    ▀▀▀    ▀▀▀▀   ▀▀▀▀  ▀   ▀"),
+)
+WORDMARK_LEFT_WIDTH = max(len(left) for left, _ in WORDMARK)
+WORDMARK_RIGHT_OFFSET = WORDMARK_LEFT_WIDTH + 3
+WORDMARK_WIDTH = WORDMARK_RIGHT_OFFSET + max(len(right) for _, right in WORDMARK)
 SESSION_DIRECTORIES = ("sessions", "archived_sessions")
 SHARED_DIRECTORIES = (*SESSION_DIRECTORIES, "thread-writer-locks")
 
@@ -446,11 +456,23 @@ def draw_text(screen, row, col, value, style=0, width=None, *, keep_end=False):
 def draw_panel(screen, top, left, width, height, title, style):
     edge = "─" * (width - 2)
     draw_text(screen, top, left, "╭" + edge + "╮", style)
-    draw_text(screen, top, left + 2, f" {title} ", style, width - 4)
+    if title:
+        draw_text(screen, top, left + 2, f" {title} ", style, width - 4)
     for row in range(top + 1, top + height - 1):
         draw_text(screen, row, left, "│", style)
         draw_text(screen, row, left + width - 1, "│", style)
     draw_text(screen, top + height - 1, left, "╰" + edge + "╯", style)
+
+
+def draw_wordmark(screen, top, left, width, large, styles):
+    content_width = WORDMARK_WIDTH if large else len("MultiCodex")
+    text_left = left + (width - content_width) // 2
+    if large:
+        for row, (first, second) in enumerate(WORDMARK, top):
+            draw_text(screen, row, text_left, first, styles["accent"])
+            draw_text(screen, row, text_left + WORDMARK_RIGHT_OFFSET, second, curses.A_BOLD)
+    else:
+        draw_text(screen, top, text_left, "MultiCodex", styles["accent"])
 
 
 def quota_label(percent, pending=False):
@@ -481,7 +503,7 @@ def draw_dashboard(screen, manager, accounts, index, message, styles, *, focus=N
         draw_text(screen, 1, 0, "Enlarge terminal", styles["muted"])
         return
 
-    card_width = min(128, cols - 2)
+    card_width = min(112, cols - (6 if cols >= 40 else 2))
     card_left = (cols - card_width) // 2
     width = card_width - 4
     left = card_left + 2
@@ -492,18 +514,29 @@ def draw_dashboard(screen, manager, accounts, index, message, styles, *, focus=N
     count = len(accounts)
     show_accounts = wide or (bool(accounts) and focus != "actions")
     show_actions = wide or not show_accounts
-    panel_items = max(count if show_accounts else 0, len(DASHBOARD_ACTIONS) if show_actions else 0)
-    height = min(rows - 9, max(6, panel_items + 3))
+    action_count = len(DASHBOARD_ACTIONS) if show_actions else 0
+    account_count = count if show_accounts else 0
+    large_title = rows >= 22 and card_width >= WORDMARK_WIDTH + 4
+    title_height = len(WORDMARK) if large_title else 1 if rows >= 18 else 0
+    title_space = title_height + 1 if title_height else 0
+    height = min(rows - 8 - title_space, max(6, account_count + 3, action_count + 2))
     capacity = height - 3
-    card_height = height + 6
-    free_rows = rows - card_height
-    card_top = min(round(free_rows * (1 - 0.618)), free_rows - 3)
-    top = card_top + 4
-    title = "MultiCodex  ·  Docker" if manager.docker else "MultiCodex"
+    target_row = (height - 1) * GOLDEN_TOP_FRACTION
+    card_height = height + 5
+    free_rows = rows - title_space - card_height
+    stack_top = min(round(free_rows * GOLDEN_TOP_FRACTION), free_rows - 3)
+    if title_height:
+        draw_wordmark(screen, stack_top, card_left, card_width, large_title, styles)
+    card_top = stack_top + title_space
+    top = card_top + 3
+    title = "" if title_height else "MultiCodex"
+    if manager.docker:
+        title = f"{title}  ·  Docker" if title else "Docker"
     draw_panel(screen, card_top, card_left, card_width, card_height, title, styles["muted"])
-    draw_text(screen, card_top, card_left + 3, title, styles["accent"])
-    draw_text(screen, card_top + 2, left, "Project", styles["muted"])
-    draw_text(screen, card_top + 2, left + 9, str(manager.workspace), width=width - 9, keep_end=True)
+    if title:
+        draw_text(screen, card_top, card_left + 3, title, styles["accent"])
+    draw_text(screen, card_top + 1, left, "Project", styles["muted"])
+    draw_text(screen, card_top + 1, left + 9, str(manager.workspace), width=width - 9, keep_end=True)
 
     if show_accounts:
         border = styles["accent"] if focus == "accounts" else styles["muted"]
@@ -514,15 +547,18 @@ def draw_dashboard(screen, manager, accounts, index, message, styles, *, focus=N
         week_col = left + account_width - week_width
         reset_col = week_col - reset_width
         five_col = reset_col - five_width
-        draw_text(screen, top + 1, five_col, "5h left" if full_labels else "5h", styles["muted"])
-        draw_text(screen, top + 1, reset_col, "5h reset" if full_labels else "Reset", styles["muted"])
-        draw_text(screen, top + 1, week_col, "Week left" if full_labels else "Week", styles["muted"])
+        account_rows = max(1, min(count, capacity))
+        first_offset = max(2, min(round(target_row - (account_rows - 1) / 2), height - 1 - account_rows))
+        first_row = top + first_offset
+        draw_text(screen, first_row - 1, five_col, "5h left" if full_labels else "5h", styles["muted"])
+        draw_text(screen, first_row - 1, reset_col, "5h reset" if full_labels else "Reset", styles["muted"])
+        draw_text(screen, first_row - 1, week_col, "Week left" if full_labels else "Week", styles["muted"])
         if not accounts:
-            draw_text(screen, top + 2, left + 3, "No accounts yet", styles["muted"])
+            draw_text(screen, first_row, left + 3, "No accounts yet", styles["muted"])
         start = max(0, min(index - capacity // 2, count - capacity))
         now = int(time())
         for pos, account in enumerate(accounts[start:start + capacity], start):
-            row = top + 2 + pos - start
+            row = first_row + pos - start
             current = index == pos
             active = current and focus == "accounts"
             saved = manager.has_credentials(account.home)
@@ -547,9 +583,10 @@ def draw_dashboard(screen, manager, accounts, index, message, styles, *, focus=N
 
     if show_actions:
         border = styles["accent"] if focus == "actions" else styles["muted"]
-        draw_panel(screen, top, side, menu_width, height, "ACTIONS", border)
-        start = max(0, min(action_index - capacity // 2, len(DASHBOARD_ACTIONS) - capacity))
-        for pos, (_, label) in enumerate(DASHBOARD_ACTIONS[start:start + capacity], start):
+        action_rows = min(action_count, height - 2)
+        draw_panel(screen, top, side, menu_width, action_rows + 2, "ACTIONS", border)
+        start = max(0, min(action_index - action_rows // 2, action_count - action_rows))
+        for pos, (_, label) in enumerate(DASHBOARD_ACTIONS[start:start + action_rows], start):
             row = top + 1 + pos - start
             active = focus == "actions" and pos == action_index
             style = styles["selected"] if active else curses.A_NORMAL
