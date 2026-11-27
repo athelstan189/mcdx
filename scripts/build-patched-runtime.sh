@@ -7,6 +7,7 @@ if [[ $# != 3 ]]; then
 fi
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+build_cache="$root/.cache/mcdx-build"
 source_dir="$(realpath "$1")"
 stock="$(realpath "$2")"
 v8="$(realpath "$3")"
@@ -31,7 +32,8 @@ export RUSTY_V8_SRC_BINDING_PATH="$v8/src_binding_ptrcomp_sandbox_release_$targe
 export CODEX_BWRAP_SHA256="$(sha256sum "$stock/codex-resources/bwrap" | cut -d' ' -f1)"
 export STABLE_GIT_COMMIT="$(git -C "$source_dir" rev-parse HEAD)"
 export CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_PROFILE_RELEASE_LTO=false
-export CARGO_TARGET_DIR="$(realpath -m "${CARGO_TARGET_DIR:-$source_dir/codex-rs/target}")"
+export CARGO_HOME="$(realpath -m "${CARGO_HOME:-$build_cache/cargo}")"
+export CARGO_TARGET_DIR="$(realpath -m "${CARGO_TARGET_DIR:-$build_cache/target}")"
 cd "$source_dir/codex-rs"
 cargo build --release --target "$target" --package codex-cli --bin codex
 

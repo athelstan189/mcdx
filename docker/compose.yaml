@@ -13,6 +13,7 @@ services:
       HOME: /home/codex
       CODEX_HOME: /home/codex/.codex
       CODEX_SQLITE_HOME: /var/lib/multicodex/sqlite
+      XDG_CACHE_HOME: /var/cache/multicodex
       MULTICODEX_CONTAINER_SANDBOX: "${MULTICODEX_CONTAINER_SANDBOX:-0}"
       LANG: C.UTF-8
       TERM: "${TERM:-xterm-256color}"
@@ -38,6 +39,10 @@ services:
       - type: bind
         source: "${MC_SHARED}/sqlite"
         target: /var/lib/multicodex/sqlite
+        bind: {create_host_path: false}
+      - type: bind
+        source: "${MC_CACHE}"
+        target: /var/cache/multicodex
         bind: {create_host_path: false}
   project:
     extends: codex

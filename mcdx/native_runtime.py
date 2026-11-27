@@ -94,8 +94,10 @@ class NativeRuntime:
         self.codex_home = home
         self.shared = shared
         self.workspace = workspace
+        cache = root / ".cache"
+        cache.mkdir(mode=0o700, exist_ok=True)
         self.env = {**process_env(), "CODEX_HOME": str(self.codex_home),
-                    "CODEX_SQLITE_HOME": str(shared)}
+                    "CODEX_SQLITE_HOME": str(shared), "XDG_CACHE_HOME": str(cache)}
         for key in ("OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"):
             self.env.pop(key, None)
         self.command = [self.binary]

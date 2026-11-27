@@ -33,6 +33,7 @@ mkdir "$release/licenses"
 cp "$codex_source/LICENSE" "$release/licenses/codex-LICENSE"
 cp "$codex_source/NOTICE" "$release/licenses/codex-NOTICE"
 cp README.md .dockerignore "$release/"
+install -m 755 install.sh "$release/install.sh"
 cp -a docker patches "$release/"
 
 mkdir -p dist

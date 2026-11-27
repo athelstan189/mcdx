@@ -126,6 +126,8 @@ class MultiCodex:
         return f"/workspaces/{project_id}"
 
     def compose_invocation(self, home, mount=None):
+        cache = ROOT / ".cache/docker" / home.name
+        cache.mkdir(mode=0o700, parents=True, exist_ok=True)
         return [
             "docker", "compose", "--env-file", "/dev/null",
             "-f", str(ROOT / "docker/compose.yaml"),
@@ -133,6 +135,7 @@ class MultiCodex:
             **process_env(),
             "MC_HOME": str(home),
             "MC_SHARED": str(self.shared),
+            "MC_CACHE": str(cache),
             "MC_WORKSPACE": str(self.workspace),
             "MC_PROJECT_DIR": mount or "/workspace",
             "MC_UID": str(os.getuid()),

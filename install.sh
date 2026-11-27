@@ -48,12 +48,39 @@ configure_path() {
     esac
 }
 
+finish_install() {
+    if ! configure_path; then
+        printf 'Add %s to PATH or run %s directly.\n' "$HOME/.local/bin" "$HOME/.local/bin/mcdx" >&2
+    fi
+}
+
 main() {
-    local local_dir='' download_url=''
+    local package='multicodex-linux-x86_64'
+    local archive="$package.tar.gz"
+    local local_dir='' download_url='' script_dir=''
     if [[ $# -eq 2 && "$1" == '--from-dir' ]]; then
         local_dir="$(cd -- "$2" && pwd -P)" || fail 'Could not find the archive directory.'
     elif [[ $# -ne 0 ]]; then
         fail 'Usage: bash install.sh [--from-dir ARCHIVE_DIRECTORY]'
+    elif [[ -f "${BASH_SOURCE[0]:-}" ]]; then
+        script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+        if [[ -f "$script_dir/$archive" ]]; then
+            local_dir="$script_dir"
+        elif [[ -f "$script_dir/dist/$archive" ]]; then
+            local_dir="$script_dir/dist"
+        elif [[ -x "$script_dir/mcdx" && -x "$script_dir/codex-runtime/bin/codex" && ! -d "$script_dir/mcdx" ]]; then
+            "$script_dir/mcdx" install
+            finish_install
+            return
+        elif [[ -f "$script_dir/multicodex.py" && -d "$script_dir/mcdx" ]]; then
+            command -v python3 >/dev/null && python3 -c $'import curses, sys\nsys.exit(sys.version_info < (3, 9))' \
+                || fail 'Source installation requires Python 3.9 or newer with curses.'
+            [[ -x "$script_dir/codex-runtime/bin/codex" ]] || command -v codex >/dev/null \
+                || fail 'Install Codex first or download the bundled Linux x86_64 release.'
+            python3 "$script_dir/multicodex.py" install
+            finish_install
+            return
+        fi
     fi
 
     [[ "$(uname -s)/$(uname -m)" == 'Linux/x86_64' ]] || fail 'The available package requires Linux x86_64.'
@@ -73,8 +100,6 @@ main() {
         download_url="$repository/releases/download/$tag"
     fi
 
-    local package='multicodex-linux-x86_64'
-    local archive="$package.tar.gz"
     local bin="$HOME/.local/bin"
     local install_dir="$HOME/.local/opt/mcdx"
     local target="$install_dir/current/mcdx"
@@ -127,9 +152,7 @@ main() {
         ln -s -- "$target" "$launcher"
     fi
     printf 'Installed %s at %s\n' "$version" "$launcher"
-    if ! configure_path; then
-        printf 'Add %s to PATH or run %s directly.\n' "$bin" "$launcher" >&2
-    fi
+    finish_install
 }
 
 main "$@"

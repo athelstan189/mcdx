@@ -4,20 +4,16 @@ MultiCodex 在同一个项目里管理多个 ChatGPT 账号。每个账号有独
 
 ## 立即开始
 
-Linux x86_64 用户可以用一条命令安装或更新 GitHub 上的最新正式版。
+下载到本地并解压，进入解压后的目录运行同一条安装命令。
 
 ```sh
-bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/athelstan189/mcdx/main/install.sh | bash' && export PATH="$HOME/.local/bin:$PATH"
+bash install.sh
 ```
 
-安装后，在任意项目目录运行 `mcdx`。发行包自带 Codex 和 Python，默认使用本机模式。安装脚本会校验压缩包，把程序放在 `~/.local/opt/mcdx/`，并创建 `~/.local/bin/mcdx`。如果你已经下载了压缩包和 `.sha256` 文件，也可以在源码目录运行 `bash install.sh --from-dir 下载目录`。
+- 已装 Python 3.9+（含 curses）和 Codex 的用户可以下载源码 ZIP，也可以用 `git clone https://github.com/athelstan189/mcdx.git` 获取源码。 [下载源码 ZIP](https://github.com/athelstan189/mcdx/archive/refs/heads/main.zip)
+- Linux x86_64 发行包自带 Codex 和 Python，在 Ubuntu 24.04 构建。 [查看 GitHub 发行包](https://github.com/athelstan189/mcdx/releases)
 
-手动安装时，解压发行包，在项目目录运行解压出来的 `mcdx`。Linux x86_64 发行包在 Ubuntu 24.04 构建。
-
-```sh
-cd /path/to/project
-/path/to/multicodex-linux-x86_64/mcdx
-```
+安装后，打开新终端，在任意项目目录运行 `mcdx`。也可以在当前终端直接运行 `~/.local/bin/mcdx`。请保留安装时使用的目录。
 
 首次打开按 Enter，输入本地别名并回车，就会弹出登录方式选择。用方向键选设备码或浏览器登录，再按 Enter。设备码登录需要在 ChatGPT 开启设备码授权。弹窗会显示授权链接、进度和结果。使用 Tab 选中「打开浏览器」「复制链接」或「取消」，再按 Enter 执行。复制链接需要终端支持剪贴板。
 
@@ -29,11 +25,13 @@ cd /path/to/project
 
 本机模式也可以用大写 `L` 直接进入浏览器登录弹窗，或用 `mcdx login 账号别名 --browser` 启动命令行登录。通过 SSH 使用远程服务器时，先从浏览器所在电脑建立回调端口转发，例如 `ssh -L 1455:localhost:1455 user@server`，再在该 SSH 会话中启动浏览器登录。Docker 模式的弹窗提供设备码登录。
 
-如需从任意项目直接运行 `mcdx`，在解压目录运行一次 `./mcdx install`，它会在 `~/.local/bin` 创建入口。该目录需在 `PATH` 中。请保留解压目录里的运行时和配套文件。默认工作目录是启动命令时的目录，也可用 `mcdx --workspace /path/to/project` 指定。
+默认工作目录是启动命令时的目录，也可用 `mcdx --workspace /path/to/project` 指定。
 
 本机版直接读写原版 Codex 的 `~/.codex/sessions/`、`~/.codex/archived_sessions/` 和本地会话数据库。每个账号的凭据、配置、缓存和日志位于 `~/.codex/multicodex/accounts/` 下的专属目录，改名后继续使用同一个目录。旧版 MultiCodex 数据在首次启动时迁入。迁移需要退出仍在运行的旧版窗口。
 
 本机版沿用 Codex 自带的沙箱。管理器的恢复菜单通过本地 App Server 枚举共享会话，再按 ID 在所选账号下打开。内置的 `/resume` 可通过面向 Codex 0.172.0 的 `patches/resume.patch` 放开账号筛选。
+
+Linux 上由 mcdx 启动的 Codex 将 `XDG_CACHE_HOME` 指向安装目录下的 `.cache/`，Docker 模式在其中的 `docker/` 下为每个账号使用独立目录。源码目录的 `.cache/` 已加入 Git 忽略规则。
 
 ## Docker 版
 
@@ -64,5 +62,7 @@ bash scripts/package-release.sh ./codex-runtime /path/to/codex-0.172.0-source
 ```
 
 压缩包和 SHA-256 校验文件输出到 `dist/`。同一账号可以在多个窗口同时处理不同会话。每条会话由 Codex 的写锁保护，已有窗口在写入时，另一个窗口可以查看历史。要接续同一条会话，退出占用它的窗口，再在另一窗口按 `r` 重试。
+
+本机构建默认将 Cargo 的下载缓存和编译产物存放在 `.cache/mcdx-build/`。显式设置 `CARGO_HOME` 或 `CARGO_TARGET_DIR` 可以指定其他路径。
 
 发布新版前更新 `mcdx/release_update.py` 里的 `VERSION`。将分发包和校验文件上传到 GitHub Release，并使用对应的 `v主版本.次版本.补丁版本` 标签。
