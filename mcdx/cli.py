@@ -2,7 +2,6 @@ import argparse
 import curses
 import hashlib
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -13,16 +12,17 @@ from pathlib import Path
 from time import time
 
 from .account_status import AccountStatus, StatusChecks, remaining_quota
+from .accounts import NAME, AccountStore
 from .login_dialog import DOWN, ENTER, TAB, UP, box, copy_link, open_browser, sign_in
 from .native_runtime import NativeRuntime, app_server, import_sessions, locked, process_env
 from .release_update import REPOSITORY, VERSION, check_for_update
 
 FROZEN = getattr(sys, "frozen", False)
 ROOT = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parents[1]
-NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
 ACCOUNT_ACTIONS = ("open", "resume", "login", "status", "logout")
 PROJECT_ACTIONS = ("open", "resume")
-DASHBOARD_ACTIONS = (("add", "Add account"), ("check-status", "Check status"), ("quit", "Quit"))
+DASHBOARD_ACTIONS = (("check-status", "Check status"), ("add", "Add account"),
+                     ("change-name", "Change name"), ("quit", "Quit account"))
 SESSION_DIRECTORIES = ("sessions", "archived_sessions")
 SHARED_DIRECTORIES = (*SESSION_DIRECTORIES, "thread-writer-locks")
 
@@ -48,6 +48,7 @@ class MultiCodex:
         self.accounts_dir = backend / "accounts"
         self.shared = backend / "shared" if docker else self.codex_home
         self.accounts_dir.mkdir(parents=True, exist_ok=True)
+        self.account_store = AccountStore(self.accounts_dir)
         directories = (*SHARED_DIRECTORIES, "sqlite") if docker else SHARED_DIRECTORIES
         for directory in directories:
             (self.shared / directory).mkdir(parents=True, exist_ok=True)
@@ -72,34 +73,27 @@ class MultiCodex:
             old_lock = legacy / "shared/sqlite/.interactive.lock"
             if old_lock.parent.is_dir():
                 locks.enter_context(locked(old_lock, busy))
-            for source in sorted((legacy / "accounts").iterdir()):
-                if not NAME.fullmatch(source.name) or source.is_symlink() or not (source / ".codex").is_dir():
-                    continue
-                target = self.accounts_dir / source.name
-                if target.exists():
-                    continue
-                with tempfile.TemporaryDirectory(prefix=".migrate-", dir=self.accounts_dir) as folder:
-                    staged = Path(folder) / "account"
-                    shutil.copytree(source / ".codex", self.account_codex_home(staged), ignore=skip_legacy_runtime_files)
-                    self.prepare_account(staged)
-                    staged.rename(target)
+            with self.account_store.editing() as accounts:
+                for source in sorted((legacy / "accounts").iterdir()):
+                    if not NAME.fullmatch(source.name) or source.is_symlink() or not (source / ".codex").is_dir():
+                        continue
+                    target = self.accounts_dir / source.name
+                    if target.exists() or source.name in accounts:
+                        continue
+                    with tempfile.TemporaryDirectory(prefix=".migrate-", dir=self.accounts_dir) as folder:
+                        staged = Path(folder) / "account"
+                        shutil.copytree(source / ".codex", self.account_codex_home(staged), ignore=skip_legacy_runtime_files)
+                        self.prepare_account(staged)
+                        staged.rename(target)
             if import_sessions(legacy / "shared", self.shared, quiet=True):
                 raise ValueError("Some previous session files are still changing. Retry after exiting the old Codex window.")
             marker.touch()
 
     def accounts(self):
-        return sorted(
-            path.name for path in self.accounts_dir.iterdir()
-            if NAME.fullmatch(path.name) and path.is_dir() and not path.is_symlink()
-        )
+        return sorted(self.account_store.accounts().values(), key=lambda account: account.name)
 
     def add(self, name):
-        if not NAME.fullmatch(name):
-            raise ValueError("Use 1–32 lowercase letters, numbers, underscores or hyphens. Start with a letter or number.")
-        home = self.accounts_dir / name
-        if home.is_symlink() or (home.exists() and not home.is_dir()):
-            raise ValueError("The account path is occupied.")
-        self.prepare_account(home)
+        return self.account_store.add(name, self.prepare_account)
 
     def account_codex_home(self, home):
         return home / ".codex" if self.docker else home
@@ -119,8 +113,8 @@ class MultiCodex:
                     if not link.is_symlink() or link.resolve() != target.resolve():
                         raise ValueError(f"Shared session directory is occupied: {link}")
 
-    def has_credentials(self, name):
-        return (self.account_codex_home(self.accounts_dir / name) / "auth.json").is_file()
+    def has_credentials(self, home):
+        return (self.account_codex_home(home) / "auth.json").is_file()
 
     def project_mount(self):
         if self.workspace.is_relative_to(self.codex_home) or self.codex_home.is_relative_to(self.workspace):
@@ -130,13 +124,6 @@ class MultiCodex:
             return "/workspace"
         project_id = hashlib.sha256(os.fsencode(self.workspace)).hexdigest()[:24]
         return f"/workspaces/{project_id}"
-
-    def account_home(self, name):
-        if name not in self.accounts():
-            raise ValueError(f"Unknown account: {name}")
-        home = self.accounts_dir / name
-        self.prepare_account(home)
-        return home
 
     def compose_invocation(self, home, mount=None):
         return [
@@ -152,8 +139,8 @@ class MultiCodex:
             "MC_GID": str(os.getgid()),
         }
 
-    def app_server_invocation(self, name, container=None):
-        home = self.account_home(name)
+    def app_server_invocation(self, home, container=None):
+        self.prepare_account(home)
         args = ["app-server", "--listen", "stdio://"]
         if not self.docker:
             runtime = NativeRuntime(ROOT, self.shared, home, self.workspace)
@@ -169,10 +156,13 @@ class MultiCodex:
             *args,
         ], {"env": env}
 
-    def run(self, action, name=None, thread=None):
+    def run(self, action, home=None, thread=None):
         if self.docker and action == "browser-login":
             raise ValueError("Browser sign-in is available in native mode. Use device sign-in for Docker.")
-        home = self.accounts_dir if action == "build" else self.account_home(name)
+        if action == "build":
+            home = self.accounts_dir
+        else:
+            self.prepare_account(home)
 
         if not self.docker:
             runtime = NativeRuntime(ROOT, self.shared, home, self.workspace)
@@ -201,8 +191,8 @@ class MultiCodex:
                 command.append(thread)
         return command, {"env": env}
 
-    def account_status(self, name):
-        home = self.account_home(name)
+    def account_status(self, home):
+        self.prepare_account(home)
         if self.docker:
             command, options = self.docker_invocation("status", home)
         else:
@@ -216,7 +206,7 @@ class MultiCodex:
                 return AccountStatus("Signed out", "muted")
             return AccountStatus("Check failed", "error")
         try:
-            command, options = self.app_server_invocation(name)
+            command, options = self.app_server_invocation(home)
             with app_server(command, timeout=10, **options) as request:
                 response = request("account/rateLimits/read", {"excludeResetCreditDetails": True})
             five_hours, week, five_hours_reset_at = remaining_quota(response)
@@ -227,9 +217,9 @@ class MultiCodex:
 
 def choose(screen, manager, selected, message, update_check):
     accounts = manager.accounts()
-    index = accounts.index(selected) if selected in accounts else 0
+    index = next((i for i, account in enumerate(accounts) if account.home == selected), 0)
     focus = "accounts" if accounts else "actions"
-    action_index = 0
+    action_index = 0 if accounts else 1
     styles = dashboard_styles()
     try:
         curses.curs_set(0)
@@ -247,10 +237,10 @@ def choose(screen, manager, selected, message, update_check):
     checks = manager.status_checks
     refreshing = []
     for account in accounts:
-        if manager.has_credentials(account):
-            checks.refresh(account)
+        if manager.has_credentials(account.home):
+            checks.refresh(account.home)
         else:
-            checks.forget(account)
+            checks.forget(account.home)
     while True:
         checks.poll()
         if refreshing and all(account not in checks.pending for account in refreshing):
@@ -259,7 +249,8 @@ def choose(screen, manager, selected, message, update_check):
                 "Account status refreshed.", False
             )
             refreshing = []
-        name = accounts[index] if accounts else None
+        account = accounts[index] if accounts else None
+        home = account.home if account else None
         status_message = ("Refreshing account status…", False) if refreshing else message
         update_pending = not update_check.done()
         update = None if update_pending else update_check.result()
@@ -268,7 +259,7 @@ def choose(screen, manager, selected, message, update_check):
         draw_dashboard(screen, manager, accounts, index, status_message, styles,
                        focus=focus, action_index=action_index, update=update)
         if dialog:
-            draw_dialog(screen, dialog, alias if dialog == "add" else name, error, styles, dialog_index)
+            draw_dialog(screen, dialog, alias, error, styles, dialog_index, account=account)
         screen.refresh()
         idle_timeout = 1000 if countdown_active else -1
         screen.timeout(150 if checks.pending or update_pending else idle_timeout)
@@ -283,22 +274,26 @@ def choose(screen, manager, selected, message, update_check):
             continue
         screen.timeout(-1)
 
-        if dialog == "add":
+        if dialog in ("add", "change-name"):
             if key == "\x1b" or (key in ENTER and dialog_index == 1):
                 dialog = None
             elif key in (*TAB, curses.KEY_UP, curses.KEY_DOWN):
                 dialog_index = 1 - dialog_index
             elif key in ENTER:
                 try:
-                    manager.add(alias)
+                    edited = manager.add(alias) if dialog == "add" else manager.account_store.rename(account, alias)
                 except (OSError, ValueError) as exc:
                     error = str(exc)
                 else:
-                    accounts = manager.accounts()
-                    index = accounts.index(alias)
-                    focus, action_index = "accounts", 0
+                    adding = dialog == "add"
                     dialog = None
-                    message = sign_in(screen, manager, accounts, index, styles, draw_dashboard, draw_text)
+                    accounts = manager.accounts()
+                    index = next(i for i, entry in enumerate(accounts) if entry.home == edited.home)
+                    focus, action_index = "accounts", 0
+                    if adding:
+                        message = sign_in(screen, manager, accounts, index, styles, draw_dashboard, draw_text)
+                    else:
+                        message = (f"Account name saved as {alias}.", False)
             elif dialog_index == 0 and key in (curses.KEY_BACKSPACE, "\b", "\x7f"):
                 alias, error = alias[:-1], ""
             elif (dialog_index == 0 and isinstance(key, str)
@@ -308,7 +303,7 @@ def choose(screen, manager, selected, message, update_check):
 
         if dialog == "logout":
             if key in ("y", "Y") or (key in ENTER and dialog_index == 1):
-                return "logout", name
+                return "logout", home
             if key in (*TAB, *UP, *DOWN, curses.KEY_LEFT, curses.KEY_RIGHT):
                 dialog_index = 1 - dialog_index
             if key in ("n", "N", "\x1b", *ENTER):
@@ -339,16 +334,21 @@ def choose(screen, manager, selected, message, update_check):
             if focus == "actions" and accounts:
                 focus = "accounts"
                 continue
-            return "quit", name
+            return "quit", home
 
         action = shortcuts.get(key) or (account_shortcuts.get(key) if accounts else None)
         if key in ENTER:
             if focus == "actions":
                 action = DASHBOARD_ACTIONS[action_index][0]
             else:
-                action = "open" if manager.has_credentials(name) else "login"
+                action = "open" if manager.has_credentials(home) else "login"
         if action == "add":
             dialog, alias, error, dialog_index = "add", "", "", 0
+        elif action == "change-name":
+            if account:
+                dialog, alias, error, dialog_index = "change-name", "", "", 0
+            else:
+                message = ("Add an account first.", False)
         elif action == "logout":
             dialog, dialog_index = "logout", 0
         elif action in ("login", "browser-login"):
@@ -356,7 +356,7 @@ def choose(screen, manager, selected, message, update_check):
                               browser=(action == "browser-login"))
         elif action == "check-status":
             if not refreshing:
-                refreshing = [account for account in accounts if manager.has_credentials(account)]
+                refreshing = [entry.home for entry in accounts if manager.has_credentials(entry.home)]
                 for account in refreshing:
                     if account not in checks.pending:
                         checks.refresh(account, force=True)
@@ -365,7 +365,7 @@ def choose(screen, manager, selected, message, update_check):
                 elif not wide_dashboard(*screen.getmaxyx()):
                     focus = "accounts"
         elif action:
-            return action, name
+            return action, home
 
 
 def dashboard_styles():
@@ -494,22 +494,22 @@ def draw_dashboard(screen, manager, accounts, index, message, styles, *, focus=N
             draw_text(screen, top + 2, left + 3, "No accounts yet", styles["muted"])
         start = max(0, min(index - capacity // 2, count - capacity))
         now = int(time())
-        for pos, name in enumerate(accounts[start:start + capacity], start):
+        for pos, account in enumerate(accounts[start:start + capacity], start):
             row = top + 2 + pos - start
             current = index == pos
             active = current and focus == "accounts"
-            saved = manager.has_credentials(name)
+            saved = manager.has_credentials(account.home)
             style = styles["selected"] if active else curses.A_BOLD if current else curses.A_NORMAL
             if active:
                 draw_text(screen, row, left + 1, " " * (account_width - 2), style)
             draw_text(screen, row, left + 2, "›" if current else " ", style)
-            draw_text(screen, row, left + 4, name, style, five_col - left - 5)
-            status = manager.status_checks.results.get(name)
+            draw_text(screen, row, left + 4, account.name, style, five_col - left - 5)
+            status = manager.status_checks.results.get(account.home)
             quota_style = style if active else styles[status.style if status and saved else "muted"]
             if not saved or (status and status.label == "Signed out"):
                 draw_text(screen, row, five_col, "Signed out", quota_style, 15)
             else:
-                pending = name in manager.status_checks.pending
+                pending = account.home in manager.status_checks.pending
                 draw_text(screen, row, five_col, quota_label(status.five_hours if status else None, pending),
                           quota_style, five_width - 1)
                 draw_text(screen, row, reset_col,
@@ -533,7 +533,7 @@ def draw_dashboard(screen, manager, accounts, index, message, styles, *, focus=N
     footer_row = card_top + card_height + 1
     if update:
         draw_text(screen, footer_row - 1, left, f"Update {update} · u View", styles["accent"], width)
-    enter_label = "Open" if focus == "accounts" and manager.has_credentials(accounts[index]) else (
+    enter_label = "Open" if focus == "accounts" and manager.has_credentials(accounts[index].home) else (
         "Sign in" if focus == "accounts" else "Confirm"
     )
     footer = f"↑↓ Select   Enter {enter_label}" if wide else "↑↓ Select  Enter"
@@ -589,7 +589,7 @@ def view_update(screen, styles, tag, redraw):
         screen.timeout(-1)
 
 
-def draw_dialog(screen, mode, value, error, styles, selection):
+def draw_dialog(screen, mode, value, error, styles, selection, *, account):
     rows, cols = screen.getmaxyx()
     if rows < 8 or cols < 16:
         return
@@ -600,18 +600,24 @@ def draw_dialog(screen, mode, value, error, styles, selection):
     draw_text(screen, top, left, "╭" + "─" * (width - 2) + "╮", styles["accent"])
     draw_text(screen, top + 7, left, "╰" + "─" * (width - 2) + "╯", styles["accent"])
     inset = left + 3
-    if mode == "add":
-        draw_text(screen, top + 1, inset, "Add account", curses.A_BOLD)
-        draw_text(screen, top + 2, inset, "Use lowercase letters, numbers, _ or -.", styles["muted"], width - 6)
+    if mode in ("add", "change-name"):
+        renaming = mode == "change-name"
+        title = "Change name" if renaming else "Add account"
+        detail = f"Current name  {account.name}" if renaming else "Use lowercase letters, numbers, _ or -."
+        draw_text(screen, top + 1, inset, title, curses.A_BOLD)
+        draw_text(screen, top + 2, inset, detail, styles["muted"], width - 6)
+        if renaming:
+            draw_text(screen, top + 3, inset, "New name", styles["muted"], width - 6)
         field = "  " + value + ("▏" if selection == 0 else "")
         draw_text(screen, top + 4, inset, field, styles["selected"] if selection == 0 else 0, width - 6)
         draw_text(screen, top + 5, inset, error, styles["error"], width - 6)
-        draw_text(screen, top + 6, inset, "Enter Next   Tab", styles["muted"], width - 6)
+        key_hint = "Enter Save   Tab" if renaming else "Enter Next   Tab"
+        draw_text(screen, top + 6, inset, key_hint, styles["muted"], width - 6)
         draw_text(screen, top + 6, inset + 18, " Cancel ", styles["selected"] if selection == 1 else 0,
                   width - 24)
     else:
         draw_text(screen, top + 1, inset, "Sign out", curses.A_BOLD)
-        draw_text(screen, top + 3, inset, f"Sign out of {value}?", width=width - 6)
+        draw_text(screen, top + 3, inset, f"Sign out of {account.name}?", width=width - 6)
         draw_text(screen, top + 5, inset, " Cancel ", styles["selected"] if selection == 0 else 0, width - 6)
         draw_text(screen, top + 5, inset + 10, " Sign out ", styles["selected"] if selection == 1 else 0,
                   width - 16)
@@ -658,15 +664,15 @@ def choose_session(screen, sessions):
 
 
 def tui(manager):
-    name = None
+    home = None
     message = None
     update_check = check_for_update()
     while True:
-        action, name = curses.wrapper(choose, manager, name, message, update_check)
+        action, home = curses.wrapper(choose, manager, home, message, update_check)
         if action == "quit":
             return 0
         try:
-            code = manager.run(action, name)
+            code = manager.run(action, home)
             message = (f"{action.title()} failed (exit {code})" if code else f"{action.title()} complete", bool(code))
             if code or action in ("status", "build", "logout"):
                 input("Press Enter to return to MultiCodex. ")
@@ -731,4 +737,10 @@ def main():
         manager.add(args.account)
         return 0
     action = "browser-login" if getattr(args, "browser", False) else args.action
-    return manager.run(action, getattr(args, "account", None), getattr(args, "thread", None))
+    home = None
+    if action != "build":
+        account = manager.account_store.accounts().get(args.account)
+        if account is None:
+            raise ValueError(f"Unknown account: {args.account}")
+        home = account.home
+    return manager.run(action, home, getattr(args, "thread", None))

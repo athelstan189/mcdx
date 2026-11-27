@@ -202,9 +202,9 @@ def stop_login(process, client, container, env):
             pass
 
 
-def wait_for_login(screen, manager, name, method, render, styles):
+def wait_for_login(screen, manager, home, method, render, styles):
     container = f"mcdx-login-{uuid.uuid4().hex}" if manager.docker else None
-    command, options = manager.app_server_invocation(name, container)
+    command, options = manager.app_server_invocation(home, container)
     with tempfile.TemporaryFile() as errors, subprocess.Popen(
         command, **options, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errors,
     ) as process:
@@ -271,7 +271,8 @@ def wait_for_login(screen, manager, name, method, render, styles):
 
 
 def sign_in(screen, manager, accounts, index, styles, dashboard, draw_text, *, browser=False):
-    name = accounts[index]
+    account = accounts[index]
+    name = account.name
     methods = [("Device code", "Authorize from any browser", "chatgptDeviceCode")]
     if not manager.docker:
         methods.append(("Browser sign-in", "Authorize with a browser callback", "chatgpt"))
@@ -292,7 +293,7 @@ def sign_in(screen, manager, accounts, index, styles, dashboard, draw_text, *, b
             elif result == "success":
                 render([("✓ Signed in", styles["good"])], "Enter Confirm", ("Done",))
                 if screen.get_wch() in (*ENTER, "\x1b"):
-                    manager.status_checks.refresh(name, force=True)
+                    manager.status_checks.refresh(account.home, force=True)
                     return (f"Signed in as {name}", False)
                 continue
             else:
@@ -314,7 +315,7 @@ def sign_in(screen, manager, accounts, index, styles, dashboard, draw_text, *, b
                     continue
             browser = False
             try:
-                result, error = wait_for_login(screen, manager, name, methods[selection][2], render, styles)
+                result, error = wait_for_login(screen, manager, account.home, methods[selection][2], render, styles)
             except (OSError, ValueError, KeyError) as exc:
                 result, error = "failed", str(exc)
             if result == "cancelled":

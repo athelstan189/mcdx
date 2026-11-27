@@ -15,13 +15,15 @@ cd /path/to/project
 
 管理卡片包含 Accounts 和 Actions 两个面板，快捷键与状态提示在卡片下方。Accounts 显示 Codex 的 5 小时和 7 天用量窗口的剩余百分比。`5h reset` 一列显示距离 5 小时额度重置的时间，并随时间倒计时。用 ↑ / ↓ 选择账号，Enter 直接打开 Codex，尚未登录的账号会先打开登录窗口。按 Tab 切到 Actions，选中 Check status 后按一次 Enter，Accounts 中的额度和重置时间会在后台刷新。缺失的数据以 `—` 显示。窄终端一次显示一个面板。
 
+改名时先选中账号，再按 Tab 切到 Actions，选择 **Change name**。输入新别名后按 Enter 保存。改名后可继续使用原有的登录凭据和会话。**Quit account** 退出管理界面。
+
 启动管理界面时，mcdx 会在后台检查 GitHub 正式版。发现新版时，卡片下方会提示版本，按 `u` 可以查看、打开或复制发布页链接，更新由你决定。用 `mcdx --version` 查看当前版本。
 
 本机模式也可以用大写 `L` 直接进入浏览器登录弹窗，或用 `mcdx login 账号别名 --browser` 启动命令行登录。通过 SSH 使用远程服务器时，先从浏览器所在电脑建立回调端口转发，例如 `ssh -L 1455:localhost:1455 user@server`，再在该 SSH 会话中启动浏览器登录。Docker 模式的弹窗提供设备码登录。
 
 如需从任意项目直接运行 `mcdx`，在解压目录运行一次 `./mcdx install`，它会在 `~/.local/bin` 创建入口。该目录需在 `PATH` 中。请保留解压目录里的运行时和配套文件。默认工作目录是启动命令时的目录，也可用 `mcdx --workspace /path/to/project` 指定。
 
-本机版直接读写原版 Codex 的 `~/.codex/sessions/`、`~/.codex/archived_sessions/` 和本地会话数据库。每个账号的凭据、配置、缓存和日志位于 `~/.codex/multicodex/accounts/<别名>/`。旧版 MultiCodex 数据在首次启动时迁入。迁移需要退出仍在运行的旧版窗口。
+本机版直接读写原版 Codex 的 `~/.codex/sessions/`、`~/.codex/archived_sessions/` 和本地会话数据库。每个账号的凭据、配置、缓存和日志位于 `~/.codex/multicodex/accounts/` 下的专属目录，改名后继续使用同一个目录。旧版 MultiCodex 数据在首次启动时迁入。迁移需要退出仍在运行的旧版窗口。
 
 本机版沿用 Codex 自带的沙箱。管理器的恢复菜单通过本地 App Server 枚举共享会话，再按 ID 在所选账号下打开。内置的 `/resume` 可通过面向 Codex 0.172.0 的 `patches/resume.patch` 放开账号筛选。
 
