@@ -22,7 +22,7 @@ ROOT = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resol
 ACCOUNT_ACTIONS = ("open", "resume", "login", "status", "logout")
 PROJECT_ACTIONS = ("open", "resume")
 DASHBOARD_ACTIONS = (("check-status", "Check status"), ("add", "Add account"),
-                     ("change-name", "Change name"), ("quit", "Quit account"))
+                     ("change-name", "Change name"), ("delete", "Delete account"), ("quit", "Quit mcdx"))
 SESSION_DIRECTORIES = ("sessions", "archived_sessions")
 SHARED_DIRECTORIES = (*SESSION_DIRECTORIES, "thread-writer-locks")
 
@@ -78,7 +78,7 @@ class MultiCodex:
                     if not NAME.fullmatch(source.name) or source.is_symlink() or not (source / ".codex").is_dir():
                         continue
                     target = self.accounts_dir / source.name
-                    if target.exists() or source.name in accounts:
+                    if target.exists() or self.account_store.is_deleted(target) or source.name in accounts:
                         continue
                     with tempfile.TemporaryDirectory(prefix=".migrate-", dir=self.accounts_dir) as folder:
                         staged = Path(folder) / "account"
@@ -99,6 +99,8 @@ class MultiCodex:
         return home / ".codex" if self.docker else home
 
     def prepare_account(self, home):
+        if self.account_store.is_deleted(home):
+            raise ValueError("This account was deleted. Reopen MultiCodex.")
         private_home = self.account_codex_home(home)
         (private_home / "log").mkdir(parents=True, exist_ok=True)
         for directory in SHARED_DIRECTORIES:
@@ -114,7 +116,7 @@ class MultiCodex:
                         raise ValueError(f"Shared session directory is occupied: {link}")
 
     def has_credentials(self, home):
-        return (self.account_codex_home(home) / "auth.json").is_file()
+        return not self.account_store.is_deleted(home) and (self.account_codex_home(home) / "auth.json").is_file()
 
     def project_mount(self):
         if self.workspace.is_relative_to(self.codex_home) or self.codex_home.is_relative_to(self.workspace):
@@ -304,6 +306,28 @@ def choose(screen, manager, selected, message, update_check):
                 alias, error = alias + key, ""
             continue
 
+        if dialog == "delete":
+            if key == "\x1b" or (key in ENTER and dialog_index == 0):
+                dialog = None
+            elif key in (*TAB, *UP, *DOWN, curses.KEY_LEFT, curses.KEY_RIGHT):
+                dialog_index = 1 - dialog_index
+            elif key in ENTER:
+                try:
+                    cleanup_error = manager.account_store.delete(account)
+                except (OSError, ValueError) as exc:
+                    error = str(exc)
+                else:
+                    checks.forget(home)
+                    if home in refreshing:
+                        refreshing.remove(home)
+                    accounts = manager.accounts()
+                    index = min(index, max(0, len(accounts) - 1))
+                    focus = "accounts" if accounts else "actions"
+                    action_index = 0 if accounts else 1
+                    dialog = None
+                    message = (cleanup_error, True) if cleanup_error else (f"Deleted {account.name}.", False)
+            continue
+
         if dialog == "logout":
             if key in ("y", "Y") or (key in ENTER and dialog_index == 1):
                 return "logout", home
@@ -347,9 +371,9 @@ def choose(screen, manager, selected, message, update_check):
                 action = "open" if manager.has_credentials(home) else "login"
         if action == "add":
             dialog, alias, error, dialog_index = "add", "", "", 0
-        elif action == "change-name":
+        elif action in ("change-name", "delete"):
             if account:
-                dialog, alias, error, dialog_index = "change-name", "", "", 0
+                dialog, alias, error, dialog_index = action, "", "", 0
             else:
                 message = ("Add an account first.", False)
         elif action == "logout":
@@ -593,6 +617,18 @@ def view_update(screen, styles, tag, redraw):
 
 
 def draw_dialog(screen, mode, value, error, styles, selection, *, account):
+    if mode == "delete":
+        body = [
+            (f"Delete {account.name}?", styles["error"]),
+            ("Local sign-in and settings will be removed.", styles["muted"]),
+            ("Shared sessions will be kept.", styles["muted"]),
+        ]
+        if error:
+            body.append((error, styles["error"]))
+        box(screen, draw_text, styles, "Delete account", body, "Tab Select   Enter Confirm",
+            ("Cancel", "Delete"), selection)
+        return
+
     rows, cols = screen.getmaxyx()
     if rows < 8 or cols < 16:
         return

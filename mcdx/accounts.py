@@ -1,6 +1,7 @@
 import fcntl
 import os
 import re
+import shutil
 import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -26,6 +27,10 @@ def validate_name(name):
 class AccountStore:
     def __init__(self, directory):
         self.directory = directory
+        self.deleted = directory / ".deleted"
+
+    def is_deleted(self, home):
+        return home.parent == self.directory and (self.deleted / home.name).is_dir()
 
     def accounts(self):
         with self._locked(fcntl.LOCK_SH):
@@ -34,7 +39,7 @@ class AccountStore:
     def _read_accounts(self):
         accounts = {}
         for home in self.directory.iterdir():
-            if not NAME.fullmatch(home.name) or home.is_symlink() or not home.is_dir():
+            if not NAME.fullmatch(home.name) or home.is_symlink() or not home.is_dir() or self.is_deleted(home):
                 continue
             try:
                 name = (home / NAME_FILE).read_text(encoding="utf-8").strip()
@@ -71,7 +76,7 @@ class AccountStore:
             home = self.directory / name
             if home.is_symlink() or (home.exists() and not home.is_dir()):
                 raise ValueError("The account path is occupied.")
-            if home.exists():
+            if home.exists() or self.is_deleted(home):
                 home = self.directory / uuid4().hex
             with tempfile.TemporaryDirectory(prefix=".add-", dir=self.directory) as folder:
                 staged = Path(folder) / "account"
@@ -95,3 +100,23 @@ class AccountStore:
                 staged.write_text(name + "\n", encoding="utf-8")
                 staged.replace(account.home / NAME_FILE)
             return Account(name, account.home)
+
+    def delete(self, account):
+        with self.editing() as accounts:
+            if accounts.get(account.name) != account:
+                raise ValueError("The account changed in another window. Reopen MultiCodex.")
+            self.deleted.mkdir(mode=0o700, exist_ok=True)
+            deleted_home = self.deleted / account.home.name
+            account.home.rename(deleted_home)
+
+        # Keep the empty directory as a record of the retired account path.
+        # A Codex window that still references that path cannot reuse the alias's new account.
+        try:
+            for entry in deleted_home.iterdir():
+                if entry.is_symlink() or not entry.is_dir():
+                    entry.unlink()
+                else:
+                    shutil.rmtree(entry)
+        except OSError as exc:
+            return f"Account removed. Cleanup failed at {deleted_home}: {exc.strerror}"
+        return None

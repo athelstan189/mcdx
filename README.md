@@ -19,7 +19,7 @@ bash install.sh
 
 管理卡片包含 Accounts 和 Actions 两个面板，快捷键与状态提示在卡片下方。Accounts 显示 Codex 的 5 小时和 7 天用量窗口的剩余百分比。`5h reset` 一列显示距离 5 小时额度重置的时间，并随时间倒计时。用 ↑ / ↓ 选择账号，Enter 直接打开 Codex，尚未登录的账号会先打开登录窗口。按 Tab 切到 Actions，选中 Check status 后按一次 Enter，Accounts 中的额度和重置时间会在后台刷新。缺失的数据以 `—` 显示。窄终端一次显示一个面板。
 
-改名时先选中账号，再按 Tab 切到 Actions，选择 **Change name**。输入新别名后按 Enter 保存。改名后可继续使用原有的登录凭据和会话。**Quit account** 退出管理界面。
+先在 Accounts 选中账号，再按 Tab 切到 Actions。**Change name** 修改本地别名，**Delete account** 在确认后移除该账号的本地凭据和设置，并保留共享会话。**Quit mcdx** 退出管理界面。
 
 启动管理界面时，mcdx 会在后台检查 GitHub 正式版。发现新版时，卡片下方会提示版本，按 `u` 可以查看、打开或复制发布页链接，更新由你决定。用 `mcdx --version` 查看当前版本。
 
