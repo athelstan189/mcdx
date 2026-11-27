@@ -13,8 +13,9 @@ from contextlib import ExitStack
 from pathlib import Path
 
 from account_status import AccountStatus, StatusChecks, remaining_percentages
-from login_dialog import DOWN, ENTER, TAB, UP, sign_in
+from login_dialog import DOWN, ENTER, TAB, UP, box, copy_link, open_browser, sign_in
 from native_runtime import NativeRuntime, app_server, import_sessions, locked, process_env
+from release_update import REPOSITORY, VERSION, check_for_update
 
 ROOT = Path(sys.executable if getattr(sys, "frozen", False) else __file__).resolve().parent
 NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
@@ -223,7 +224,7 @@ class MultiCodex:
         return AccountStatus("Signed in", "good", five_hours, week)
 
 
-def choose(screen, manager, selected, message):
+def choose(screen, manager, selected, message, update_check):
     accounts = manager.accounts()
     index = accounts.index(selected) if selected in accounts else 0
     focus = "accounts" if accounts else "actions"
@@ -259,12 +260,14 @@ def choose(screen, manager, selected, message):
             refreshing = []
         name = accounts[index] if accounts else None
         status_message = ("Refreshing account status…", False) if refreshing else message
+        update_pending = not update_check.done()
+        update = None if update_pending else update_check.result()
         draw_dashboard(screen, manager, accounts, index, status_message, styles,
-                       focus=focus, action_index=action_index)
+                       focus=focus, action_index=action_index, update=update)
         if dialog:
             draw_dialog(screen, dialog, alias if dialog == "add" else name, error, styles, dialog_index)
         screen.refresh()
-        screen.timeout(150 if checks.pending else -1)
+        screen.timeout(150 if checks.pending or update_pending else -1)
         try:
             key = screen.get_wch()
         except curses.error:
@@ -308,6 +311,13 @@ def choose(screen, manager, selected, message):
                 dialog = None
             continue
 
+        if key == "u" and update:
+            def redraw():
+                draw_dashboard(screen, manager, accounts, index, status_message, styles,
+                               focus=focus, action_index=action_index, update=update)
+
+            view_update(screen, styles, update, redraw)
+            continue
         if accounts and key in (*TAB, curses.KEY_LEFT, curses.KEY_RIGHT):
             if key in TAB:
                 focus = "actions" if focus == "accounts" else "accounts"
@@ -422,7 +432,7 @@ def wide_dashboard(rows, cols):
     return cols >= 76 and rows >= 17
 
 
-def draw_dashboard(screen, manager, accounts, index, message, styles, *, focus=None, action_index=0):
+def draw_dashboard(screen, manager, accounts, index, message, styles, *, focus=None, action_index=0, update=None):
     screen.erase()
     rows, cols = screen.getmaxyx()
     if rows < 13 or cols < 32:
@@ -500,6 +510,8 @@ def draw_dashboard(screen, manager, accounts, index, message, styles, *, focus=N
             draw_text(screen, row, side + 2, ("› " if active else "  ") + label, style, menu_width - 4)
 
     footer_row = card_top + card_height + 1
+    if update:
+        draw_text(screen, footer_row - 1, left, f"Update {update} · u View", styles["accent"], width)
     enter_label = "Open" if focus == "accounts" and manager.has_credentials(accounts[index]) else (
         "Sign in" if focus == "accounts" else "Confirm"
     )
@@ -513,6 +525,47 @@ def draw_dashboard(screen, manager, accounts, index, message, styles, *, focus=N
                   styles["error" if failed else "accent"], width)
     elif not wide and not accounts:
         draw_text(screen, footer_row + 1, left, "No accounts yet", styles["muted"], width)
+
+
+def view_update(screen, styles, tag, redraw):
+    url = f"https://github.com/{REPOSITORY}/releases/tag/{tag}"
+    buttons = ("Open release", "Copy link", "Back")
+    selection = 0
+    notice = ""
+    browser = None
+    try:
+        while True:
+            if browser and browser.poll() is not None:
+                notice = "Browser did not open. Copy the link to open it manually." if browser.returncode else ""
+                browser = None
+            body = [(f"Installed {VERSION}  ·  Available {tag}", styles["muted"]), (url, styles["accent"])]
+            if notice:
+                body.append((notice, styles["muted"]))
+            redraw()
+            box(screen, draw_text, styles, "MultiCodex update", body, "Tab Select   Enter Confirm", buttons, selection)
+            screen.refresh()
+            screen.timeout(150 if browser else -1)
+            try:
+                key = screen.get_wch()
+            except curses.error:
+                continue
+            if key == "\x1b" or (key in ENTER and selection == 2):
+                return
+            if key in (*TAB, *UP, *DOWN, curses.KEY_LEFT, curses.KEY_RIGHT):
+                step = -1 if key in (curses.KEY_BTAB, *UP, curses.KEY_LEFT) else 1
+                selection = (selection + step) % len(buttons)
+            if key in ENTER:
+                try:
+                    if selection == 1:
+                        copy_link(url)
+                        notice = "Link sent to the terminal clipboard."
+                    elif browser is None:
+                        browser = open_browser(url)
+                        notice = "Opening release…" if browser else "Copy the link to a device with a browser."
+                except (OSError, ValueError) as exc:
+                    notice = str(exc)
+    finally:
+        screen.timeout(-1)
 
 
 def draw_dialog(screen, mode, value, error, styles, selection):
@@ -586,8 +639,9 @@ def choose_session(screen, sessions):
 def tui(manager):
     name = None
     message = None
+    update_check = check_for_update()
     while True:
-        action, name = curses.wrapper(choose, manager, name, message)
+        action, name = curses.wrapper(choose, manager, name, message, update_check)
         if action == "quit":
             return 0
         try:
@@ -621,6 +675,7 @@ def install_launcher():
 
 def main():
     parser = argparse.ArgumentParser(prog="mcdx", description="Manage multiple Codex accounts and share local sessions.")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
     parser.add_argument("--workspace", type=Path, default=Path(
         os.environ.get("MULTICODEX_WORKSPACE") or Path.cwd()
     ), help="Project directory (defaults to the current directory).")

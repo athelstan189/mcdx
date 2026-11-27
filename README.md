@@ -15,6 +15,8 @@ cd /path/to/project
 
 管理卡片包含 Accounts 和 Actions 两个面板，快捷键与状态提示在卡片下方。Accounts 显示 Codex 的 5 小时和 7 天用量窗口的剩余百分比。用 ↑ / ↓ 选择账号，Enter 直接打开 Codex，尚未登录的账号会先打开登录窗口。按 Tab 切到 Actions，选中 Check status 后按一次 Enter，Accounts 中的额度会在后台刷新。缺失的额度显示为 `—`。窄终端一次显示一个面板。
 
+启动管理界面时，mcdx 会在后台检查 GitHub 正式版。发现新版时，卡片下方会提示版本，按 `u` 可以查看、打开或复制发布页链接，更新由你决定。用 `mcdx --version` 查看当前版本。
+
 本机模式也可以用大写 `L` 直接进入浏览器登录弹窗，或用 `mcdx login 账号别名 --browser` 启动命令行登录。通过 SSH 使用远程服务器时，先从浏览器所在电脑建立回调端口转发，例如 `ssh -L 1455:localhost:1455 user@server`，再在该 SSH 会话中启动浏览器登录。Docker 模式的弹窗提供设备码登录。
 
 如需从任意项目直接运行 `mcdx`，在解压目录运行一次 `./mcdx install`，它会在 `~/.local/bin` 创建入口。该目录需在 `PATH` 中。请保留解压目录里的运行时和配套文件。默认工作目录是启动命令时的目录，也可用 `mcdx --workspace /path/to/project` 指定。
@@ -47,3 +49,5 @@ bash package-release.sh ./codex-runtime /path/to/codex-0.172.0-source
 ```
 
 压缩包和 SHA-256 校验文件输出到 `dist/`。同一账号可以在多个窗口同时处理不同会话。每条会话由 Codex 的写锁保护，已有窗口在写入时，另一个窗口可以查看历史。要接续同一条会话，退出占用它的窗口，再在另一窗口按 `r` 重试。
+
+发布新版前更新 `release_update.py` 里的 `VERSION`。将分发包和校验文件上传到 GitHub Release，并使用对应的 `v主版本.次版本.补丁版本` 标签。
