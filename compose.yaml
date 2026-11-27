@@ -1,0 +1,47 @@
+name: multicodex
+services:
+  codex:
+    image: multicodex:0.172.0
+    build: .
+    pull_policy: never
+    init: true
+    user: "${MC_UID}:${MC_GID}"
+    working_dir: /home/codex
+    environment:
+      HOME: /home/codex
+      CODEX_HOME: /home/codex/.codex
+      CODEX_SQLITE_HOME: /var/lib/multicodex/sqlite
+      MULTICODEX_CONTAINER_SANDBOX: "${MULTICODEX_CONTAINER_SANDBOX:-0}"
+      LANG: C.UTF-8
+      TERM: "${TERM:-xterm-256color}"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - type: bind
+        source: "${MC_HOME}"
+        target: /home/codex
+        bind: {create_host_path: false}
+      - type: bind
+        source: "${MC_SHARED}/sessions"
+        target: /home/codex/.codex/sessions
+        bind: {create_host_path: false}
+      - type: bind
+        source: "${MC_SHARED}/archived_sessions"
+        target: /home/codex/.codex/archived_sessions
+        bind: {create_host_path: false}
+      - type: bind
+        source: "${MC_SHARED}/thread-writer-locks"
+        target: /home/codex/.codex/thread-writer-locks
+        bind: {create_host_path: false}
+      - type: bind
+        source: "${MC_SHARED}/sqlite"
+        target: /var/lib/multicodex/sqlite
+        bind: {create_host_path: false}
+  project:
+    extends: codex
+    working_dir: "${MC_PROJECT_DIR:-/workspace}"
+    volumes:
+      - type: bind
+        source: "${MC_WORKSPACE}"
+        target: "${MC_PROJECT_DIR:-/workspace}"
+        bind: {create_host_path: false}
