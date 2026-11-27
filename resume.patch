@@ -1,0 +1,10 @@
+diff --git a/codex-rs/tui/src/resume_picker.rs b/codex-rs/tui/src/resume_picker.rs
+--- a/codex-rs/tui/src/resume_picker.rs
++++ b/codex-rs/tui/src/resume_picker.rs
+@@ -2631,5 +2631,5 @@ fn thread_list_params(
+     ThreadListParams {
+         include_attached_threads: false,
+-        current_account_only: true,
++        current_account_only: false,
+         included_thread_ids: None,
+         excluded_thread_ids: None,
