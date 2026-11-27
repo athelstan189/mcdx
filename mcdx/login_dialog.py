@@ -10,7 +10,7 @@ import textwrap
 import uuid
 from urllib.parse import parse_qs, urlsplit
 
-from native_runtime import process_env
+from .native_runtime import process_env
 
 
 ENTER = ("\n", "\r", curses.KEY_ENTER)

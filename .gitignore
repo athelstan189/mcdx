@@ -1,4 +1,4 @@
 /workspace
-/__pycache__/
+__pycache__/
 /dist/
 /codex-runtime/

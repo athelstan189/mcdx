@@ -2,7 +2,9 @@ name: multicodex
 services:
   codex:
     image: multicodex:0.172.0
-    build: .
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
     pull_policy: never
     init: true
     user: "${MC_UID}:${MC_GID}"

@@ -2,11 +2,11 @@
 set -euo pipefail
 
 if [[ $# != 2 ]]; then
-    echo 'Usage: bash package-release.sh CODEX_PACKAGE_DIR CODEX_SOURCE_DIR' >&2
+    echo 'Usage: bash scripts/package-release.sh CODEX_PACKAGE_DIR CODEX_SOURCE_DIR' >&2
     exit 2
 fi
 
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 codex_package="$(realpath "$1")"
 codex_source="$(realpath "$2")"
 python="${PYTHON:-python3}"
@@ -32,7 +32,8 @@ cp -a "$codex_package" "$release/codex-runtime"
 mkdir "$release/licenses"
 cp "$codex_source/LICENSE" "$release/licenses/codex-LICENSE"
 cp "$codex_source/NOTICE" "$release/licenses/codex-NOTICE"
-cp README.md compose.yaml Dockerfile .dockerignore resume.patch container-entrypoint.sh "$release/"
+cp README.md .dockerignore "$release/"
+cp -a docker patches "$release/"
 
 mkdir -p dist
 tar -C "$scratch" -cf - "$package" | gzip -1 > "$scratch/$package.tar.gz"

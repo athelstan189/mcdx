@@ -11,16 +11,18 @@ class AccountStatus:
     style: str
     five_hours: Optional[int] = None
     week: Optional[int] = None
+    five_hours_reset_at: Optional[int] = None
 
 
-def remaining_percentages(response):
+def remaining_quota(response):
     buckets = response.get("rateLimitsByLimitId") or {}
     snapshot = buckets.get("codex")
     if snapshot is None:
         snapshot = response.get("rateLimits") or {}
         if snapshot.get("limitId") not in (None, "codex"):
-            return None, None
+            return None, None, None
     remaining = {}
+    five_hours_reset_at = None
     for name in ("primary", "secondary"):
         window = snapshot.get(name)
         if not window:
@@ -29,7 +31,11 @@ def remaining_percentages(response):
         used = window.get("usedPercent")
         if duration in (300, 7 * 24 * 60) and type(used) is int:
             remaining[duration] = max(0, min(100, 100 - used))
-    return remaining.get(300), remaining.get(7 * 24 * 60)
+        if duration == 300:
+            resets_at = window.get("resetsAt")
+            if type(resets_at) is int and resets_at > 0:
+                five_hours_reset_at = resets_at
+    return remaining.get(300), remaining.get(7 * 24 * 60), five_hours_reset_at
 
 
 class StatusChecks:

@@ -1,4 +1,6 @@
 **
-!Dockerfile
-!resume.patch
-!container-entrypoint.sh
+!docker/
+!docker/Dockerfile
+!docker/container-entrypoint.sh
+!patches/
+!patches/resume.patch

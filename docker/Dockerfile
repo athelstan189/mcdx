@@ -9,7 +9,7 @@ ENV PATH=/root/.cargo/bin:$PATH \
     CARGO_PROFILE_RELEASE_LTO=false
 RUN git clone --depth 1 --branch rust-v0.172.0 https://github.com/openai/codex.git /src
 WORKDIR /src/codex-rs
-COPY resume.patch /tmp/resume.patch
+COPY patches/resume.patch /tmp/resume.patch
 RUN git -C /src apply --check /tmp/resume.patch && git -C /src apply /tmp/resume.patch
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 RUN arch="$(uname -m)"; \
@@ -51,6 +51,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates git libgcc-s1 util-linux \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /opt/codex /opt/codex
-COPY --chmod=755 container-entrypoint.sh /usr/local/bin/multicodex-entrypoint
+COPY --chmod=755 docker/container-entrypoint.sh /usr/local/bin/multicodex-entrypoint
 ENV PATH=/opt/codex/bin:/opt/codex/codex-path:$PATH
 ENTRYPOINT ["/usr/local/bin/multicodex-entrypoint"]

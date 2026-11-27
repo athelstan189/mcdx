@@ -2,11 +2,11 @@
 set -euo pipefail
 
 if [[ $# != 3 ]]; then
-    echo 'Usage: bash build-patched-runtime.sh CODEX_SOURCE_DIR STOCK_RUNTIME_DIR V8_ASSETS_DIR' >&2
+    echo 'Usage: bash scripts/build-patched-runtime.sh CODEX_SOURCE_DIR STOCK_RUNTIME_DIR V8_ASSETS_DIR' >&2
     exit 2
 fi
 
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source_dir="$(realpath "$1")"
 stock="$(realpath "$2")"
 v8="$(realpath "$3")"
@@ -14,10 +14,10 @@ target="$(rustc -vV | sed -n 's/^host: //p')"
 test "$(git -C "$source_dir" rev-parse HEAD)" = "$(git -C "$source_dir" rev-parse 'rust-v0.172.0^{commit}')"
 test "$("$stock/bin/codex" --version)" = 'codex-cli 0.172.0'
 
-if git -C "$source_dir" apply --check "$root/resume.patch" 2>/dev/null; then
-    git -C "$source_dir" apply "$root/resume.patch"
+if git -C "$source_dir" apply --check "$root/patches/resume.patch" 2>/dev/null; then
+    git -C "$source_dir" apply "$root/patches/resume.patch"
 else
-    git -C "$source_dir" apply --reverse --check "$root/resume.patch"
+    git -C "$source_dir" apply --reverse --check "$root/patches/resume.patch"
 fi
 
 version="$(python3 "$source_dir/.github/scripts/rusty_v8_bazel.py" resolved-v8-crate-version)"
